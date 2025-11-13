@@ -152,6 +152,28 @@ extension HTTPClient {
         }
     }
 
+    private func withSafeCancellation<T>(
+        _ operation: @escaping () async throws -> T,
+        onCancel: @escaping @Sendable () -> Void
+    ) async throws -> T {
+        let task = Task {
+            try await operation()
+        }
+
+        return try await withTaskGroup(of: T.self) { group in
+            group.addTask {
+                try await task.value
+            }
+
+            // 等待 task 或 cancel
+            for try await result in group {
+                return result
+            }
+
+            throw CancellationError()
+        }
+    }
+
     /// - warning: This method may violates Structured Concurrency because it returns a `HTTPClientResponse` that needs to be
     ///            streamed by the user. This means the request, the connection and other resources are still alive when the request returns.
     private func executeCancellable(
@@ -161,35 +183,32 @@ extension HTTPClient {
     ) async throws -> HTTPClientResponse {
         let cancelHandler = TransactionCancelHandler()
 
-        return try await withTaskCancellationHandler(
-            operation: { () async throws -> HTTPClientResponse in
+        return try await withSafeCancellation({
                 let eventLoop = self.eventLoopGroup.any()
                 let deadlineTask = eventLoop.scheduleTask(deadline: deadline) {
-                    // cancelHandler.cancel(reason: .deadlineExceeded)
-                    Task.detached { await cancelHandler.cancel(reason: .deadlineExceeded) }
+                    cancelHandler.cancel(reason: .deadlineExceeded)
                 }
                 defer {
                     deadlineTask.cancel()
                 }
-
-                return try await withCheckedThrowingContinuation { continuation in
+                return try await withCheckedThrowingContinuation {
+                    (continuation: CheckedContinuation<HTTPClientResponse, Swift.Error>) -> Void in
                     let transaction = Transaction(
                         request: request,
                         requestOptions: .fromClientConfiguration(self.configuration),
                         logger: logger,
-                        connectionDeadline: .now() + self.configuration.timeout.connectionCreationTimeout,
+                        connectionDeadline: .now() + (self.configuration.timeout.connectionCreationTimeout),
                         preferredEventLoop: eventLoop,
                         responseContinuation: continuation
                     )
 
-                    // cancelHandler.registerTransaction(transaction)
-                    Task.detached { await cancelHandler.registerTransaction(transaction) }
+                    cancelHandler.registerTransaction(transaction)
+
                     self.poolManager.executeRequest(transaction)
                 }
             },
             onCancel: {
-                // cancelHandler.cancel(reason: .taskCanceled)
-                Task.detached { await cancelHandler.cancel(reason: .taskCanceled) }
+                cancelHandler.cancel(reason: .taskCanceled)
             }
         )
     }
@@ -237,8 +256,10 @@ private actor TransactionCancelHandler {
         }
     }
 
-    func registerTransaction(_ transaction: Transaction) async {
-        await self._registerTransaction(transaction)
+    nonisolated func registerTransaction(_ transaction: Transaction) {
+        Task {
+            await self._registerTransaction(transaction)
+        }
     }
 
     private func _cancel(reason: CancelReason) {
@@ -253,7 +274,9 @@ private actor TransactionCancelHandler {
         }
     }
 
-    func cancel(reason: CancelReason) async {
-        await _cancel(reason: reason)
+    nonisolated func cancel(reason: CancelReason) {
+        Task {
+            await self._cancel(reason: reason)
+        }
     }
 }
