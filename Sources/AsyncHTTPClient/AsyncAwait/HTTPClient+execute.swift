@@ -166,7 +166,7 @@ extension HTTPClient {
                 let eventLoop = self.eventLoopGroup.any()
                 let deadlineTask = eventLoop.scheduleTask(deadline: deadline) {
                     // cancelHandler.cancel(reason: .deadlineExceeded)
-                    Task { await cancelHandler.cancel(reason: .deadlineExceeded) }
+                    Task.detached { await cancelHandler.cancel(reason: .deadlineExceeded) }
                 }
                 defer {
                     deadlineTask.cancel()
@@ -183,13 +183,13 @@ extension HTTPClient {
                     )
 
                     // cancelHandler.registerTransaction(transaction)
-                    Task { await cancelHandler.registerTransaction(transaction) }
+                    Task.detached { await cancelHandler.registerTransaction(transaction) }
                     self.poolManager.executeRequest(transaction)
                 }
             },
             onCancel: {
                 // cancelHandler.cancel(reason: .taskCanceled)
-                Task { await cancelHandler.cancel(reason: .taskCanceled) }
+                Task.detached { await cancelHandler.cancel(reason: .taskCanceled) }
             }
         )
     }
