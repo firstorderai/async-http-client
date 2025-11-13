@@ -152,22 +152,6 @@ extension HTTPClient {
         }
     }
 
-    private func withSafeCancellation<T>(
-        _ operation: @escaping @Sendable () async throws -> T,
-        onCancel: @escaping @Sendable () -> Void
-    ) async throws -> T {
-        let task = _Concurrency.Task.detached {
-            try await operation()
-        }
-
-        return try await withTaskCancellationHandler {
-            try await task.value
-        } onCancel: {
-            onCancel()
-            task.cancel()
-        }
-    }
-
     /// - warning: This method may violates Structured Concurrency because it returns a `HTTPClientResponse` that needs to be
     ///            streamed by the user. This means the request, the connection and other resources are still alive when the request returns.
     private func executeCancellable(
@@ -177,7 +161,12 @@ extension HTTPClient {
     ) async throws -> HTTPClientResponse {
         let cancelHandler = TransactionCancelHandler()
 
-        return try await withSafeCancellation({
+        defer {
+            withExtendedLifetime(cancelHandler) {}
+        }
+
+        return try await withTaskCancellationHandler(
+            operation: { () async throws -> HTTPClientResponse in
                 let eventLoop = self.eventLoopGroup.any()
                 let deadlineTask = eventLoop.scheduleTask(deadline: deadline) {
                     cancelHandler.cancel(reason: .deadlineExceeded)
