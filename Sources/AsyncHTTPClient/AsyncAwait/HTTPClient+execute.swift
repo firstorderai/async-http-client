@@ -165,21 +165,25 @@ extension HTTPClient {
             operation: { [cancelHandler] () async throws -> HTTPClientResponse in
                 // 显式延长 cancelHandler 生命周期
                 return try await withExtendedLifetime(cancelHandler) {
-                    // 改用 Swift Task 的延时机制，而不是 eventLoop.scheduleTask
-                    async let timeout: Void = {
-                        try? await Task.sleep(nanoseconds: UInt64(deadline.uptimeNanoseconds - NIODeadline.now().uptimeNanoseconds))
+                    let eventLoop = self.eventLoopGroup.any()
+                    let deadlineTask = eventLoop.scheduleTask(deadline: deadline) {
                         cancelHandler.cancel(reason: .deadlineExceeded)
-                    }()
+                    }
+                    defer {
+                        deadlineTask.cancel()
+                    }
 
-                    return try await withCheckedThrowingContinuation { continuation in
+                    return try await withCheckedThrowingContinuation {
+                        (continuation: CheckedContinuation<HTTPClientResponse, Swift.Error>) -> Void in
                         let transaction = Transaction(
                             request: request,
                             requestOptions: .fromClientConfiguration(self.configuration),
                             logger: logger,
-                            connectionDeadline: .now() + self.configuration.timeout.connectionCreationTimeout,
-                            preferredEventLoop: self.eventLoopGroup.any(),
+                            connectionDeadline: .now() + (self.configuration.timeout.connectionCreationTimeout),
+                            preferredEventLoop: eventLoop,
                             responseContinuation: continuation
                         )
+
                         cancelHandler.registerTransaction(transaction)
                         self.poolManager.executeRequest(transaction)
                     }
