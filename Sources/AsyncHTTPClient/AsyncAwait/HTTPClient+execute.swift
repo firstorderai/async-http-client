@@ -161,32 +161,33 @@ extension HTTPClient {
     ) async throws -> HTTPClientResponse {
         let cancelHandler = TransactionCancelHandler()
 
+        // 先延长生命周期（同步）
+        withExtendedLifetime(cancelHandler) {
+            // nothing needed here
+        }
+
         return try await withTaskCancellationHandler(
-            operation: { [cancelHandler] () async throws -> HTTPClientResponse in
-                // 显式延长 cancelHandler 生命周期
-                return try await withExtendedLifetime(cancelHandler) {
-                    let eventLoop = self.eventLoopGroup.any()
-                    let deadlineTask = eventLoop.scheduleTask(deadline: deadline) {
-                        cancelHandler.cancel(reason: .deadlineExceeded)
-                    }
-                    defer {
-                        deadlineTask.cancel()
-                    }
+            operation: { () async throws -> HTTPClientResponse in
+                let eventLoop = self.eventLoopGroup.any()
+                let deadlineTask = eventLoop.scheduleTask(deadline: deadline) {
+                    cancelHandler.cancel(reason: .deadlineExceeded)
+                }
+                defer {
+                    deadlineTask.cancel()
+                }
 
-                    return try await withCheckedThrowingContinuation {
-                        (continuation: CheckedContinuation<HTTPClientResponse, Swift.Error>) -> Void in
-                        let transaction = Transaction(
-                            request: request,
-                            requestOptions: .fromClientConfiguration(self.configuration),
-                            logger: logger,
-                            connectionDeadline: .now() + (self.configuration.timeout.connectionCreationTimeout),
-                            preferredEventLoop: eventLoop,
-                            responseContinuation: continuation
-                        )
+                return try await withCheckedThrowingContinuation { continuation in
+                    let transaction = Transaction(
+                        request: request,
+                        requestOptions: .fromClientConfiguration(self.configuration),
+                        logger: logger,
+                        connectionDeadline: .now() + self.configuration.timeout.connectionCreationTimeout,
+                        preferredEventLoop: eventLoop,
+                        responseContinuation: continuation
+                    )
 
-                        cancelHandler.registerTransaction(transaction)
-                        self.poolManager.executeRequest(transaction)
-                    }
+                    cancelHandler.registerTransaction(transaction)
+                    self.poolManager.executeRequest(transaction)
                 }
             },
             onCancel: {
