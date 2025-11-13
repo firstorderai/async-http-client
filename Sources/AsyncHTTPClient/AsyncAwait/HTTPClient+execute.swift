@@ -153,24 +153,18 @@ extension HTTPClient {
     }
 
     private func withSafeCancellation<T>(
-        _ operation: @escaping () async throws -> T,
+        _ operation: @escaping @Sendable () async throws -> T,
         onCancel: @escaping @Sendable () -> Void
     ) async throws -> T {
-        let task = Task {
+        let task = Swift.Task.detached {
             try await operation()
         }
 
-        return try await withTaskGroup(of: T.self) { group in
-            group.addTask {
-                try await task.value
-            }
-
-            // 等待 task 或 cancel
-            for try await result in group {
-                return result
-            }
-
-            throw CancellationError()
+        return try await withTaskCancellationHandler {
+            try await task.value
+        } onCancel: {
+            onCancel()
+            task.cancel()
         }
     }
 
