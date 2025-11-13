@@ -156,7 +156,7 @@ extension HTTPClient {
         _ operation: @escaping @Sendable () async throws -> T,
         onCancel: @escaping @Sendable () -> Void
     ) async throws -> T {
-        let task = Swift.Task.detached {
+        let task = _Concurrency.Task.detached {
             try await operation()
         }
 
