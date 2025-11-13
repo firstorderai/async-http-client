@@ -161,16 +161,14 @@ extension HTTPClient {
     ) async throws -> HTTPClientResponse {
         let cancelHandler = TransactionCancelHandler()
 
-        // 先延长生命周期（同步）
-        withExtendedLifetime(cancelHandler) {
-            // nothing needed here
-        }
-
         return try await withTaskCancellationHandler(
-            operation: { () async throws -> HTTPClientResponse in
+            operation: { [cancelHandler] () async throws -> HTTPClientResponse in
+                // 显式强引用，保证生命周期
+                let _keepAlive = cancelHandler
+
                 let eventLoop = self.eventLoopGroup.any()
                 let deadlineTask = eventLoop.scheduleTask(deadline: deadline) {
-                    cancelHandler.cancel(reason: .deadlineExceeded)
+                    _keepAlive.cancel(reason: .deadlineExceeded)
                 }
                 defer {
                     deadlineTask.cancel()
@@ -186,7 +184,7 @@ extension HTTPClient {
                         responseContinuation: continuation
                     )
 
-                    cancelHandler.registerTransaction(transaction)
+                    _keepAlive.registerTransaction(transaction)
                     self.poolManager.executeRequest(transaction)
                 }
             },
