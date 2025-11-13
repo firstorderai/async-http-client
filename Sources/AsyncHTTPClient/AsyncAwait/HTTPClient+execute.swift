@@ -16,7 +16,7 @@ import Logging
 import NIOCore
 import NIOHTTP1
 import Tracing
-import Synchronization
+import NIOConcurrencyHelpers
 
 import struct Foundation.URL
 
