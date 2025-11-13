@@ -159,11 +159,64 @@ extension HTTPClient {
         deadline: NIODeadline,
         logger: Logger
     ) async throws -> HTTPClientResponse {
-        let cancelHandler = TransactionCancelHandler()
+        // 使用 @Sendable 类确保线程安全
+        final class CancelHandler: @unchecked Sendable {
+            enum CancelReason {
+                case taskCanceled
+                case deadlineExceeded
+            }
 
-        defer {
-            withExtendedLifetime(cancelHandler) {}
+            private enum State {
+                case initialised
+                case register(Transaction)
+                case cancelled(CancelReason)
+            }
+
+            private let lock = NIOLock()
+            private var state: State = .initialised
+
+            func registerTransaction(_ transaction: Transaction) {
+                self.lock.withLock {
+                    switch self.state {
+                    case .initialised:
+                        self.state = .register(transaction)
+                    case .cancelled(let reason):
+                        self.cancelTransaction(transaction, for: reason)
+                    case .register:
+                        preconditionFailure("transaction already set")
+                    }
+                }
+            }
+
+            func cancel(reason: CancelReason) {
+                let transactionToCancel: Transaction? = self.lock.withLock {
+                    switch self.state {
+                    case .register(let transaction):
+                        self.state = .cancelled(reason)
+                        return transaction
+                    case .cancelled:
+                        return nil
+                    case .initialised:
+                        self.state = .cancelled(reason)
+                        return nil
+                    }
+                }
+
+                if let transaction = transactionToCancel {
+                    self.cancelTransaction(transaction, for: reason)
+                }
+            }
+
+            private func cancelTransaction(_ transaction: Transaction, for reason: CancelReason) {
+                switch reason {
+                case .taskCanceled:
+                    transaction.cancel()
+                case .deadlineExceeded:
+                    transaction.deadlineExceeded()
+                }
+            }
         }
+        let cancelHandler = CancelHandler()
 
         return try await withTaskCancellationHandler(
             operation: { () async throws -> HTTPClientResponse in
@@ -200,66 +253,66 @@ extension HTTPClient {
 /// There is currently no good way to asynchronously cancel an object that is initiated inside the `body` closure of `with*Continuation`.
 /// As a workaround we use `TransactionCancelHandler` which will take care of the race between instantiation of `Transaction`
 /// in the `body` closure and cancelation from the `onCancel` closure  of `withTaskCancellationHandler`.
-@available(macOS 10.15, iOS 13.0, watchOS 6.0, tvOS 13.0, *)
-private actor TransactionCancelHandler {
-    enum CancelReason {
-        /// swift concurrency task was canceled
-        case taskCanceled
-        /// deadline timeout
-        case deadlineExceeded
-    }
+// @available(macOS 10.15, iOS 13.0, watchOS 6.0, tvOS 13.0, *)
+// private actor TransactionCancelHandler {
+//     enum CancelReason {
+//         /// swift concurrency task was canceled
+//         case taskCanceled
+//         /// deadline timeout
+//         case deadlineExceeded
+//     }
 
-    private enum State {
-        case initialised
-        case register(Transaction)
-        case cancelled(CancelReason)
-    }
+//     private enum State {
+//         case initialised
+//         case register(Transaction)
+//         case cancelled(CancelReason)
+//     }
 
-    private var state: State = .initialised
+//     private var state: State = .initialised
 
-    init() {}
+//     init() {}
 
-    private func cancelTransaction(_ transaction: Transaction, for reason: CancelReason) {
-        switch reason {
-        case .taskCanceled:
-            transaction.cancel()
-        case .deadlineExceeded:
-            transaction.deadlineExceeded()
-        }
-    }
+//     private func cancelTransaction(_ transaction: Transaction, for reason: CancelReason) {
+//         switch reason {
+//         case .taskCanceled:
+//             transaction.cancel()
+//         case .deadlineExceeded:
+//             transaction.deadlineExceeded()
+//         }
+//     }
 
-    private func _registerTransaction(_ transaction: Transaction) {
-        switch self.state {
-        case .initialised:
-            self.state = .register(transaction)
-        case .cancelled(let reason):
-            self.cancelTransaction(transaction, for: reason)
-        case .register:
-            preconditionFailure("transaction already set")
-        }
-    }
+//     private func _registerTransaction(_ transaction: Transaction) {
+//         switch self.state {
+//         case .initialised:
+//             self.state = .register(transaction)
+//         case .cancelled(let reason):
+//             self.cancelTransaction(transaction, for: reason)
+//         case .register:
+//             preconditionFailure("transaction already set")
+//         }
+//     }
 
-    nonisolated func registerTransaction(_ transaction: Transaction) {
-        Task {
-            await self._registerTransaction(transaction)
-        }
-    }
+//     nonisolated func registerTransaction(_ transaction: Transaction) {
+//         Task {
+//             await self._registerTransaction(transaction)
+//         }
+//     }
 
-    private func _cancel(reason: CancelReason) {
-        switch self.state {
-        case .register(let transaction):
-            self.state = .cancelled(reason)
-            self.cancelTransaction(transaction, for: reason)
-        case .cancelled:
-            break
-        case .initialised:
-            self.state = .cancelled(reason)
-        }
-    }
+//     private func _cancel(reason: CancelReason) {
+//         switch self.state {
+//         case .register(let transaction):
+//             self.state = .cancelled(reason)
+//             self.cancelTransaction(transaction, for: reason)
+//         case .cancelled:
+//             break
+//         case .initialised:
+//             self.state = .cancelled(reason)
+//         }
+//     }
 
-    nonisolated func cancel(reason: CancelReason) {
-        Task {
-            await self._cancel(reason: reason)
-        }
-    }
-}
+//     nonisolated func cancel(reason: CancelReason) {
+//         Task {
+//             await self._cancel(reason: reason)
+//         }
+//     }
+// }
