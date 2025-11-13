@@ -162,13 +162,11 @@ extension HTTPClient {
         let cancelHandler = TransactionCancelHandler()
 
         return try await withTaskCancellationHandler(
-            operation: { [cancelHandler] () async throws -> HTTPClientResponse in
-                // 显式强引用，保证生命周期
-                let _keepAlive = cancelHandler
-
+            operation: { () async throws -> HTTPClientResponse in
                 let eventLoop = self.eventLoopGroup.any()
                 let deadlineTask = eventLoop.scheduleTask(deadline: deadline) {
-                    _keepAlive.cancel(reason: .deadlineExceeded)
+                    // cancelHandler.cancel(reason: .deadlineExceeded)
+                    Task { await cancelHandler.cancel(reason: .deadlineExceeded) }
                 }
                 defer {
                     deadlineTask.cancel()
@@ -184,12 +182,14 @@ extension HTTPClient {
                         responseContinuation: continuation
                     )
 
-                    _keepAlive.registerTransaction(transaction)
+                    // cancelHandler.registerTransaction(transaction)
+                    Task { await cancelHandler.registerTransaction(transaction) }
                     self.poolManager.executeRequest(transaction)
                 }
             },
             onCancel: {
-                cancelHandler.cancel(reason: .taskCanceled)
+                // cancelHandler.cancel(reason: .taskCanceled)
+                Task { await cancelHandler.cancel(reason: .taskCanceled) }
             }
         )
     }
@@ -237,10 +237,8 @@ private actor TransactionCancelHandler {
         }
     }
 
-    nonisolated func registerTransaction(_ transaction: Transaction) {
-        Task {
-            await self._registerTransaction(transaction)
-        }
+    func registerTransaction(_ transaction: Transaction) async {
+        await self._registerTransaction(transaction)
     }
 
     private func _cancel(reason: CancelReason) {
@@ -255,9 +253,7 @@ private actor TransactionCancelHandler {
         }
     }
 
-    nonisolated func cancel(reason: CancelReason) {
-        Task {
-            await self._cancel(reason: reason)
-        }
+    func cancel(reason: CancelReason) async {
+        await _cancel(reason: reason)
     }
 }
